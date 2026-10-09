@@ -106,3 +106,21 @@ def test_unresolvable_mentions_stay_mentions(coop):
 
     assert resolved.subject == Mention("Somebody", "Person")
     assert resolved.object == Ref("place:boston")
+
+
+def test_coop_writes_entities_through_to_a_store(schema):
+    from chickentruck import ChickenStock
+
+    stock = ChickenStock()
+    coop = ChickenCoop(schema=schema, store=stock)
+    coop.add(Entity("person:franklin", "Benjamin Franklin", "Person"))
+    coop.add_alias("person:franklin", "Ben")
+    created = coop.resolve("Deborah Read", type="Person")
+    coop.confirm(created.entity_id)
+
+    assert stock.get_entity("person:franklin").aliases == frozenset({"Ben"})
+    assert not stock.get_entity("person:deborah-read").provisional
+
+    reloaded = ChickenCoop(schema=schema, store=stock)
+    assert reloaded.resolve("ben").entity_id == "person:franklin"
+    assert len(reloaded) == 2

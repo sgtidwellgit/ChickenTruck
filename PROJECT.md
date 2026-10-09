@@ -27,6 +27,9 @@ Raw Information
   -> grill             ACCEPTED / REJECTED / NEEDS_REVIEW         (grilled_chicken)
   -> Fact              accepted knowledge                         (grilled_chicken)
   -> ChickenStock      indexed, bitemporal, conflict-aware store  (chicken_stock)
+     / SqliteStock     the same, persisted in SQLite
+  -> to_graph / to_tables / to_ntriples                           (chicken_platter)
+  -> render_facts / check_claim                                   (chicken_soup)
 ```
 
 A tender is never mutated into a fact; `grill` produces a new `Fact`.
@@ -35,12 +38,13 @@ conflict detection, but is optional throughout.
 
 ## Release plan
 
-Versions are date-based (`YYYY.M.D`).
+Versions are date-based (`YYYY.M.D`). All three releases ship to PyPI
+together once release 3 is done, versioned by the publish date.
 
 | Release | Scope | Status |
 |---|---|---|
-| 1 | Data model, schema, entities + exact/alias resolution, `grill`, in-memory stock with `find`, conflict detection | **Built** (`2026.10.9`, unpublished) |
-| 2 | SQLite backend, graph export, relational export, RAG helpers (`render_facts`, `check_claim`) | Planned |
+| 1 | Data model, schema, entities + exact/alias resolution, `grill`, in-memory stock with `find`, conflict detection | **Built** |
+| 2 | SQLite backend, graph export, relational export, RAG helpers (`render_facts`, `check_claim`) | **Built** |
 | 3 | Extractors: pattern-based, and LLM via a caller-supplied completion function | Planned |
 
 ## Decisions
@@ -126,37 +130,60 @@ never deleted. Without a schema there is no cardinality, so no
 conflict detection.
 
 ### 11. Storage interface — release 1 (interface + memory), release 2 (SQLite)
-`StockBackend` protocol: `add`, `get`, `find`, `all`, `conflicts`,
-`resolve_conflict`, `__len__`. `find` is a pattern match (subject /
+`StockBackend` protocol: `add`, `get`, `find`, `all`, `sources`,
+`conflicts`, `resolve_conflict`, `put_entity`, `get_entity`,
+`entities`, `__len__`. `find` is a pattern match (subject /
 predicate / object) plus filters (`valid_at`, `as_of`,
 `min_confidence`, `include_superseded`) — not a query language.
-`ChickenStock` is the in-memory reference implementation, indexed by
-subject, predicate, and object. A SQLite backend (stdlib, still zero
-dependencies) follows in release 2; at that point entity persistence
-joins the backend interface so the coop can live in the same store.
-Postgres and Neo4j come later as optional extras.
+The rules (merging, conflict detection, query filtering) are written
+once in `StockLogic`; a backend only supplies storage primitives, so
+every backend behaves identically — the test suite runs every stock
+test against both.
+
+- `ChickenStock`: in memory, indexed by subject, predicate, and object.
+- `SqliteStock` (release 2): stdlib `sqlite3`, still zero dependencies.
+  Values are stored as tagged JSON so `Ref`s, time points, dates, and
+  datetimes round-trip; other literals must be JSON-compatible. Each
+  `add` is one transaction. The schema is saved in the file and reused
+  when it is reopened without one; the conflict policy is code and is
+  passed in each time. A storage-format version is checked on open.
+
+Entities persist in the backend too: `ChickenCoop(store=stock)` loads
+the store's entities and writes every change through. Postgres and
+Neo4j come later as optional extras.
 
 Known limitation: merged evidence is current-state only — an `as_of`
 query shows which facts were believed then, with the evidence they
 hold now.
 
 ### 12. Graph export — release 2
-Property graph: entities become nodes; entity-to-entity facts become
-edges carrying `fact_id`, confidence, validity, and source IDs.
-Literal-valued facts become node properties ("simple" mode) or
-separate statements that keep their provenance ("full" mode). Plus a
-dependency-free N-Triples serializer.
+`chicken_platter.to_graph`: entities become nodes; entity-to-entity
+facts become edges carrying `fact_id`, confidence, validity,
+qualifiers, and source IDs. Literal-valued facts become node
+properties ("simple" mode) or separate statements that keep their
+provenance ("full" mode). Superseded facts are left out unless asked
+for. `to_ntriples` is a dependency-free N-Triples serializer (IRIs
+under `urn:chickentruck:` by default, XSD-typed literals by precision);
+plain triples can't carry confidence or provenance, so it exports
+active facts only.
 
 ### 13. Relational export — release 2
 Normalized tables — `entities`, `aliases`, `sources`, `facts`,
 `evidence`, `qualifiers`, `conflicts` — emitted as lists of dicts per
-table, with no pandas dependency. Turning them into DataFrames is
-user code.
+table (`chicken_platter.to_tables`), with no pandas dependency. Every
+cell is a scalar; container values become JSON text. Superseded facts
+are included by default so the history is complete. Turning the
+tables into DataFrames is user code.
 
 ### 14. RAG and agents — release 2
-`stock.find()`; `render_facts()` turns facts into cited sentences
-ready for a prompt; `check_claim(s, p, o)` answers supported /
-contradicted / unknown with the evidence. An agent framework's
+In `chicken_soup`: `render_facts()` turns facts into cited lines with
+a numbered source list, ready for a prompt. `check_claim(s, p, o)`
+answers **supported / contradicted / disputed / unknown** with the
+facts and evidence behind it. *Disputed* (both supporting and
+contradicting facts are active, typically an open conflict) was added
+during implementation so an unresolved conflict is never reported as
+plain support. Contradiction needs a single-valued predicate in the
+schema. With a coop, subjects and objects can be given as names. An agent framework's
 grounding checks can call `check_claim` from application code;
 ChickenTruck itself never imports another fleet member.
 
