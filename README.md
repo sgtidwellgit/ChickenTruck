@@ -3,10 +3,11 @@
 Knowledge Engineering for Python — turning information into structured,
 traceable knowledge, one nugget at a time.
 
-**Status: pre-alpha.** Release 1 is built: the knowledge data model,
-schema, entity resolution, validation, and an in-memory, conflict-aware
-store. Exports, the SQLite backend, and extractors come in later
-releases (see `PROJECT.md`). The API may still change.
+**Status: pre-alpha.** Releases 1 and 2 are built: the knowledge data
+model, schema, entity resolution, validation, a conflict-aware store
+(in memory or SQLite), graph / relational / RDF exports, and RAG
+helpers. Extractors come in release 3 (see `PROJECT.md`). The API may
+still change.
 
 ## Purpose
 
@@ -79,7 +80,9 @@ Names describe what each piece actually does, not just a theme.
 | `chicken_coop` | `Entity`, `Ref`, `Mention`, and `ChickenCoop`: entity registry and resolution |
 | `chicken_recipe` | `Schema`: entity types, subtypes, and predicate definitions |
 | `grilled_chicken` | `grill()`: validation into accepted / rejected / needs-review, producing a `Fact` |
-| `chicken_stock` | `ChickenStock`: the indexed store for accepted knowledge, with conflict detection |
+| `chicken_stock` | `ChickenStock` / `SqliteStock`: the store for accepted knowledge, with conflict detection |
+| `chicken_platter` | `to_graph`, `to_tables`, `to_ntriples`: knowledge served as a property graph, relational tables, or RDF |
+| `chicken_soup` | `render_facts`, `check_claim`: cited prompt context and grounding checks for RAG systems and agents |
 
 ## Pipeline
 
@@ -88,7 +91,9 @@ Raw Information
   -> Nugget / ChickenTender   candidate claim + evidence
   -> ChickenCoop              mentions resolved to entities
   -> grill                    accepted / rejected / needs review
-  -> ChickenStock             accepted Facts, queryable
+  -> ChickenStock             accepted Facts, queryable (or SqliteStock, persisted)
+  -> chicken_platter          graph / tables / N-Triples
+  -> chicken_soup             prompt context and claim checks
 ```
 
 ## Quick start
@@ -151,6 +156,43 @@ Key behaviors:
   policy records them; `highest_confidence`, `highest_authority`, and
   `most_recent_evidence` are opt-in. Losers are superseded, not deleted.
 
+## Persist, export, and ground
+
+`SqliteStock` follows the same rules as `ChickenStock`, persisted to a
+file using only Python's built-in `sqlite3`. Give the coop the stock as
+its `store` and entities are saved alongside the facts:
+
+```python
+from chickentruck import SqliteStock, check_claim, render_facts, to_graph, to_tables
+
+with SqliteStock("knowledge.db", schema=schema) as stock:
+    coop = ChickenCoop(schema=schema, store=stock)
+    ...  # resolve, grill, and add as above
+
+# Later, in another process: the schema, facts, and entities are all in the file
+with SqliteStock("knowledge.db") as stock:
+    coop = ChickenCoop(schema=stock.schema, store=stock)
+
+    print(render_facts(stock.find(subject="person:franklin"), coop=coop))
+    # - Benjamin Franklin born in Boston (from 1706-01-17; confidence 0.85) [1]
+    #
+    # Sources:
+    # [1] Encyclopedia - https://example.org/franklin
+
+    check = check_claim(stock, "Ben Franklin", "BORN_IN", "Philadelphia", coop=coop)
+    print(check.verdict)          # contradicted
+
+    graph = to_graph(stock)       # nodes / edges / statements, JSON-ready
+    tables = to_tables(stock)     # entities, aliases, sources, facts, evidence, qualifiers, conflicts
+```
+
+- `check_claim` returns **supported**, **contradicted**, **disputed**
+  (the stock holds both sides, e.g. an open conflict), or **unknown**,
+  with the facts and evidence behind the answer.
+- `to_tables` rows are flat dicts: write them to any database, or pass
+  them to a DataFrame constructor in your own code.
+- `to_ntriples` exports active facts as RDF for semantic-web tools.
+
 ## Installation
 
 ```bash
@@ -158,15 +200,16 @@ pip install chickentruck
 ```
 
 The published `0.1.0` is the original name-reservation stub; the
-release described here (`2026.10.9`) is not on PyPI yet. ChickenTruck has
-no runtime dependencies.
+release described here is not on PyPI yet. ChickenTruck has no runtime
+dependencies.
 
 ## Development status
 
 - **Release 1 (built):** data model, schema, resolution, `grill`,
   in-memory `ChickenStock` with `find` and conflict detection.
-- **Release 2 (planned):** SQLite backend, graph and relational exports,
-  RAG helpers (`render_facts`, `check_claim`).
+- **Release 2 (built):** `SqliteStock`, entity persistence, graph /
+  relational / N-Triples exports, RAG helpers (`render_facts`,
+  `check_claim`).
 - **Release 3 (planned):** extractors. Until then `extract_nuggets()`
   raises `NotImplementedError`.
 

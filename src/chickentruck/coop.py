@@ -126,26 +126,46 @@ class Resolver(Protocol):
         ...
 
 
+class EntityStore(Protocol):
+    """Where a coop persists its entities -- any `StockBackend` qualifies."""
+
+    def put_entity(self, entity: Entity) -> None:
+        ...
+
+    def entities(self) -> List[Entity]:
+        ...
+
+
 @dataclass
 class ChickenCoop:
-    """An in-memory entity registry with exact and normalized-alias resolution.
+    """An entity registry with exact and normalized-alias resolution.
 
     Pass a `Schema` so type hints honor subtypes: with ``Scientist`` a
     subtype of ``Person``, a ``Person`` hint also matches scientists.
+
+    Pass a ``store`` (any `StockBackend`) to persist entities alongside
+    facts: the coop loads the store's entities on creation and writes
+    every change through to it.
     """
 
     schema: Optional["Schema"] = None
+    store: Optional[EntityStore] = None
     _entities: Dict[str, Entity] = field(default_factory=dict, repr=False)
     _exact: Dict[str, Set[str]] = field(default_factory=dict, repr=False)
     _normalized: Dict[str, Set[str]] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.store is not None:
+            for entity in self.store.entities():
+                self._entities[entity.id] = entity
+                self._index(entity)
 
     def add(self, entity: Entity) -> Entity:
         """Register an entity. Its ID must be new to the coop."""
 
         if entity.id in self._entities:
             raise ValueError(f"entity {entity.id!r} already exists")
-        self._entities[entity.id] = entity
-        self._index(entity)
+        self._put(entity)
         return entity
 
     def get(self, entity_id: str) -> Optional[Entity]:
@@ -163,8 +183,7 @@ class ChickenCoop:
     def add_alias(self, entity_id: str, alias: str) -> Entity:
         entity = self._require(entity_id)
         updated = dataclasses.replace(entity, aliases=entity.aliases | {alias})
-        self._entities[entity_id] = updated
-        self._index(updated)
+        self._put(updated)
         return updated
 
     def confirm(self, entity_id: str) -> Entity:
@@ -172,7 +191,7 @@ class ChickenCoop:
 
         entity = self._require(entity_id)
         updated = dataclasses.replace(entity, provisional=False)
-        self._entities[entity_id] = updated
+        self._put(updated)
         return updated
 
     def provisional(self) -> List[Entity]:
@@ -275,6 +294,12 @@ class ChickenCoop:
         if self.schema is not None:
             return self.schema.is_a(entity_type, type)
         return False
+
+    def _put(self, entity: Entity) -> None:
+        self._entities[entity.id] = entity
+        self._index(entity)
+        if self.store is not None:
+            self.store.put_entity(entity)
 
     def _index(self, entity: Entity) -> None:
         for name in entity.names:
