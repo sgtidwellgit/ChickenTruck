@@ -21,8 +21,9 @@ framework. Anything backend-specific lives behind an optional adapter.
 
 ```
 Raw Information
-  -> Nugget            bare subject/predicate/object mentions     (chicken_nuggets)
+  -> Extractor         pattern / LLM / custom, text -> tenders    (chicken_fryer)
   -> ChickenTender     candidate claim + evidence + validity      (chicken_tenders)
+     (Nugget           the same claim stripped bare               (chicken_nuggets))
   -> resolve_tender    mentions become entity Refs                (chicken_coop)
   -> grill             ACCEPTED / REJECTED / NEEDS_REVIEW         (grilled_chicken)
   -> Fact              accepted knowledge                         (grilled_chicken)
@@ -39,13 +40,13 @@ conflict detection, but is optional throughout.
 ## Release plan
 
 Versions are date-based (`YYYY.M.D`). All three releases ship to PyPI
-together once release 3 is done, versioned by the publish date.
+together, versioned by the publish date.
 
 | Release | Scope | Status |
 |---|---|---|
 | 1 | Data model, schema, entities + exact/alias resolution, `grill`, in-memory stock with `find`, conflict detection | **Built** |
 | 2 | SQLite backend, graph export, relational export, RAG helpers (`render_facts`, `check_claim`) | **Built** |
-| 3 | Extractors: pattern-based, and LLM via a caller-supplied completion function | Planned |
+| 3 | Extractors: pattern-based, and LLM via a caller-supplied completion function; `process_text` | **Built** |
 
 ## Decisions
 
@@ -188,13 +189,38 @@ grounding checks can call `check_claim` from application code;
 ChickenTruck itself never imports another fleet member.
 
 ### 15. Extractors — release 3
-`Extractor` protocol: `extract(text, *, source) -> list[ChickenTender]`
-— tenders rather than nuggets, so provenance is attached at the start.
-First a deterministic pattern-based extractor (no dependencies). The
-LLM extractor takes a caller-supplied `complete(prompt) -> str`
-function and parses JSON from it: no vendor SDK and no model IDs in
-source. spaCy is a later optional extra. Until then
-`extract_nuggets()` raises `NotImplementedError`.
+In `chicken_fryer`. `Extractor` protocol:
+`extract(text, *, source) -> list[ChickenTender]` — tenders rather
+than nuggets, so provenance is attached at the start. Every piece of
+evidence records the quote, a `"chars START-END"` locator into the
+full text, the extractor name, and the extraction time.
+
+- `PatternExtractor` (deterministic, no dependencies) runs `Pattern`s
+  written as templates (`"{subject} was born in {object} on
+  {valid_from}"`) or raw regexes. Placeholders have kinds (`name`,
+  `date`, `year`, `int`, `number`, `word`, `text`); extra placeholders
+  become qualifiers; written-out dates normalize to ISO. Names never
+  start with a pronoun or article, so "He was born in Boston" yields
+  nothing rather than a wrong subject. A match overlapping an earlier
+  pattern's match for the same predicate is dropped, so specific
+  patterns listed first win.
+- `LLMExtractor` takes a caller-supplied `complete(prompt) -> str`:
+  no vendor SDK and no model IDs in source. The prompt lists the
+  schema; the reply is parsed leniently (object, list, code fences,
+  surrounding prose). Claims whose quote is not in the text are
+  dropped (`require_quote`, default on) as a guard against invented
+  claims; malformed claims are skipped individually with a reason
+  (`extract_with_report`). Predicates normalize to UPPER_SNAKE_CASE;
+  literal objects convert by `object_type` or the schema range. Long
+  text is chunked at paragraph/sentence boundaries (`max_chars`).
+- `process_text` runs extract → resolve → grill → stock and returns
+  every `GrillResult`. When the coop has no schema, the stock's schema
+  still types entity mentions.
+- `extract_nuggets(text, extractor)` strips tenders to bare `Nugget`s.
+
+Added during implementation: the module name `chicken_fryer`,
+`process_text`, the quote guard, and chunking. Coreference, spaCy, and
+fuzzy resolution remain future optional work.
 
 ## Fleet boundaries (do not duplicate)
 
