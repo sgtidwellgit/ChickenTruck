@@ -1,10 +1,9 @@
 # ChickenTruck — Project Notes
 
-This document captures longer-term architecture ideas for ChickenTruck,
-separately from `README.md`. Everything here is **design-stage** —
-none of it is a committed API contract, and most of it is not
-implemented at all yet. Where something below has actually been built,
-that's called out explicitly; assume "not built" otherwise.
+This document records ChickenTruck's architecture decisions and release
+plan, separately from `README.md`. The design pass of 2026-10-09
+answered every open question from the original stub; those answers are
+below, each marked with the release that delivers it.
 
 ## Purpose recap
 
@@ -14,139 +13,161 @@ knowledge, suitable for graph databases, relational databases, RAG
 systems, agents, and other consumers. It is not a knowledge-graph
 library specifically — the graph is one output shape among several.
 
-## Current state (v0.1.0)
+Ground rules: zero runtime dependencies in core, Python 3.9+, and no
+coupling to any one LLM provider, database, NLP framework, or agent
+framework. Anything backend-specific lives behind an optional adapter.
 
-Only the following exist as real code:
+## Pipeline
 
-- `chickentruck.nuggets.Nugget` — a frozen dataclass: `subject`,
-  `predicate`, `object`. No validation, no typing beyond `Any` for
-  `object`.
-- `chickentruck.tenders.ChickenTender` — a dataclass carrying the same
-  three fields plus `source`, `confidence`, `valid_from`, `valid_to`,
-  and a free-form `extraction_metadata` dict. `ChickenTender.from_nugget`
-  copies a `Nugget`'s fields in.
-- `chickentruck.grilled.grill` / `GrillResult` — the function raises
-  `NotImplementedError` unconditionally; `GrillResult` documents the
-  intended return shape (`tender`, `accepted`, `reasons`) but nothing
-  produces one yet.
-- `chickentruck.stock.ChickenStock` — a plain in-memory list wrapper
-  (`add`, `all`, `__len__`). This is the only "backend" that exists.
-- `chickentruck.nuggets.extract_nuggets` — raises `NotImplementedError`.
+```
+Raw Information
+  -> Nugget            bare subject/predicate/object mentions     (chicken_nuggets)
+  -> ChickenTender     candidate claim + evidence + validity      (chicken_tenders)
+  -> resolve_tender    mentions become entity Refs                (chicken_coop)
+  -> grill             ACCEPTED / REJECTED / NEEDS_REVIEW         (grilled_chicken)
+  -> Fact              accepted knowledge                         (grilled_chicken)
+  -> ChickenStock      indexed, bitemporal, conflict-aware store  (chicken_stock)
+```
 
-Everything below this line is exploration, not a spec.
+A tender is never mutated into a fact; `grill` produces a new `Fact`.
+The schema (`chicken_recipe`) informs resolution, validation, and
+conflict detection, but is optional throughout.
 
-## Design-stage concepts for future exploration
+## Release plan
 
-### Entity representation
+Versions are date-based (`YYYY.M.D`).
 
-How an "entity" (a person, place, organization, ...) is identified and
-typed is undecided. Options range from a bare string label up through a
-typed entity object with an ontology-defined class and stable ID. This
-decision gates entity resolution, so it should probably come first.
+| Release | Scope | Status |
+|---|---|---|
+| 1 | Data model, schema, entities + exact/alias resolution, `grill`, in-memory stock with `find`, conflict detection | **Built** (`2026.10.9`, unpublished) |
+| 2 | SQLite backend, graph export, relational export, RAG helpers (`render_facts`, `check_claim`) | Planned |
+| 3 | Extractors: pattern-based, and LLM via a caller-supplied completion function | Planned |
 
-### Entity resolution
+## Decisions
 
-Deciding that two extracted mentions ("Ben Franklin", "Benjamin
-Franklin") refer to the same real-world entity. Needs a resolution
-strategy (exact match, fuzzy match, embedding similarity, human review
-queue) and a way to represent resolved identity. Not started.
+### 1. Entity representation — release 1
+`Entity(id, label, type, aliases, provisional)`, frozen. IDs are stable
+strings, either supplied by the caller or generated as `type:slug`
+(`person:benjamin-franklin`). Objects are either an entity reference
+(`Ref(id)`) or a literal value; the `Ref` wrapper is what tells them
+apart. Before resolution, entities are plain strings or `Mention`s.
 
-### Relationship representation
+### 2. Entity resolution — release 1 (basic), later (fuzzy/embedding)
+`chicken_coop.ChickenCoop` holds entities and resolves mentions: exact
+label/alias match (score 1.0), then normalized match ignoring case,
+whitespace, and punctuation (score 0.9). Type hints honor schema
+subtypes. Several equal matches are **ambiguous and stay unresolved** —
+never guessed. No match creates a **provisional** entity (reviewable,
+then `confirm`ed). Other strategies plug in through the `Resolver`
+protocol; fuzzy (`difflib`, opt-in) and embedding resolvers come later.
 
-How a predicate is typed (free-text string vs. a fixed relationship
-vocabulary vs. an ontology-defined relation with its own constraints).
-Affects how `grilled_chicken` validates predicates and how
-`chicken_stock` exports to a graph schema.
+### 3. Predicates — release 1
+Plain strings by default. A schema `Predicate` optionally defines
+domain (subject entity types), range (an entity type or one of
+`string`/`integer`/`number`/`boolean`/`time`), cardinality
+(`one`/`many`), and temporal kind (`span`/`moment`).
 
-### Triples and beyond
+### 4. Triples and beyond — release 1
+Subject–predicate–object stays the core, plus a `qualifiers` dict for
+n-ary detail (role, location, ...) and first-class validity fields.
+Every `Fact` has a stable `fact_id` derived from the claim (subject,
+predicate, object, validity, qualifiers — not the evidence), so the
+same claim from two sources merges, and other facts can point at it.
+No full RDF reification.
 
-The subject/predicate/object shape covers simple facts but not
-n-ary relationships (e.g. "X worked at Y from date A to date B") without
-either reifying the relationship or attaching temporal fields directly
-to the triple, as `ChickenTender` does today. Whether that's sufficient
-long-term, or triples need to become first-class reified objects, is
-open.
+### 5. Claims vs. accepted facts — release 1
+`grill` is side-effect free and returns a `GrillResult` with status
+`accepted` / `rejected` / `needs_review` and structured `Finding`s
+(`rule`, `severity`, `message`). Any error rejects; any warning sends
+to review. Unresolved entities go to review, not rejection. Only an
+accepted result carries a `Fact`, and only a `Fact` can be stocked.
+Rejected tenders go back to the caller; a review UI is out of scope.
 
-### Claims versus accepted facts
+### 6. Provenance — release 1
+`Source(id, kind, uri, title, retrieved_at, authority)` where kind is
+document / api / human / model and authority is optional 0..1.
+`Evidence(source, locator, quote, confidence, extractor, extracted_at)`
+records each sighting of a claim. Tenders carry evidence; facts merge
+evidence from every tender that supports them. Evidence is required by
+default (`grill(require_evidence=False)` waives it).
 
-`chicken_tenders` already separates "proposed" from "accepted," but the
-actual promotion path — what `grilled_chicken` checks, what happens to
-rejected tenders (discarded? retained with a rejection reason? sent to
-human review?) — is undesigned.
+### 7. Confidence — release 1
+0..1, "how strongly this evidence suggests the claim is true"; `None`
+means unknown. Independent evidence combines by noisy-OR,
+`1 − Π(1 − cᵢ·aᵢ)`, with each confidence weighted by its source's
+authority (unknown authority counts as 1). The combiner is pluggable.
+`grill` rejects below `reject_below` (default 0.2) and reviews below
+`accept_at` (default 0.5); unknown confidence is noted, not penalized.
 
-### Provenance and source authority
+### 8. Time — release 1
+`TimePoint(value, precision)` with precision year / month / day /
+instant, so "1706" stays a year. ISO strings are parsed on input; a
+datetime without a timezone fails validation. Validity is the
+half-open interval `[valid_from, valid_to)`, `None` meaning unbounded;
+`moment` predicates may only set `valid_from`. The stock adds a second
+timeline — `recorded_at` / `superseded_at` — so it answers both "true
+at T" (`valid_at`) and "believed at T" (`as_of`).
 
-Every `ChickenTender` carries an optional free-text `source`, which is
-almost certainly too weak long-term: knowing *that* something has a
-source is different from knowing whether that source is trustworthy,
-how source authority should factor into confidence, and whether
-provenance needs to be a structured, queryable object rather than a
-string.
+### 9. Ontology — release 1
+`chicken_recipe.Schema`: entity types with single inheritance plus
+predicate definitions, built in Python or loaded from dict/JSON.
+Schema-free operation works: `grill` then runs structural checks only.
+`strict=True` rejects predicates the schema doesn't define. RDFS/OWL
+import/export is a later adapter.
 
-### Confidence
+### 10. Conflicts — release 1
+Detected when a fact is stocked: a `one`-cardinality predicate, same
+subject, different object, overlapping validity, both active. The
+**default policy is `keep_both`**: record a `Conflict`, pick no
+winner, and let a reviewer settle it with `resolve_conflict`. Opt-in
+policies: `highest_confidence`, `highest_authority`,
+`most_recent_evidence` (ties keep both). Losers are marked superseded,
+never deleted. Without a schema there is no cardinality, so no
+conflict detection.
 
-Currently an optional bare `float` with no defined scale, no
-combination rules (what happens when the same fact arrives from two
-sources with different confidence?), and no consumer that reads it.
+### 11. Storage interface — release 1 (interface + memory), release 2 (SQLite)
+`StockBackend` protocol: `add`, `get`, `find`, `all`, `conflicts`,
+`resolve_conflict`, `__len__`. `find` is a pattern match (subject /
+predicate / object) plus filters (`valid_at`, `as_of`,
+`min_confidence`, `include_superseded`) — not a query language.
+`ChickenStock` is the in-memory reference implementation, indexed by
+subject, predicate, and object. A SQLite backend (stdlib, still zero
+dependencies) follows in release 2; at that point entity persistence
+joins the backend interface so the coop can live in the same store.
+Postgres and Neo4j come later as optional extras.
 
-### Temporal validity
+Known limitation: merged evidence is current-state only — an `as_of`
+query shows which facts were believed then, with the evidence they
+hold now.
 
-`valid_from` / `valid_to` exist on `ChickenTender` as plain optional
-strings — no defined format, no timezone handling, and no representation
-yet of facts that are true at a point in time versus true over an
-interval versus always true.
+### 12. Graph export — release 2
+Property graph: entities become nodes; entity-to-entity facts become
+edges carrying `fact_id`, confidence, validity, and source IDs.
+Literal-valued facts become node properties ("simple" mode) or
+separate statements that keep their provenance ("full" mode). Plus a
+dependency-free N-Triples serializer.
 
-### Ontology / schema validation
+### 13. Relational export — release 2
+Normalized tables — `entities`, `aliases`, `sources`, `facts`,
+`evidence`, `qualifiers`, `conflicts` — emitted as lists of dicts per
+table, with no pandas dependency. Turning them into DataFrames is
+user code.
 
-`grilled_chicken` is meant to eventually check subject type, predicate
-validity, object type, and ontology constraints, but no ontology
-representation exists yet — this needs a decision on whether
-ChickenTruck defines its own lightweight schema format, adopts an
-existing one (e.g. RDF Schema / OWL), or stays schema-agnostic and lets
-adapters enforce constraints.
+### 14. RAG and agents — release 2
+`stock.find()`; `render_facts()` turns facts into cited sentences
+ready for a prompt; `check_claim(s, p, o)` answers supported /
+contradicted / unknown with the evidence. An agent framework's
+grounding checks can call `check_claim` from application code;
+ChickenTruck itself never imports another fleet member.
 
-### Conflict detection and knowledge reconciliation
-
-What happens when two accepted facts contradict each other (e.g. two
-different birth years for the same person)? Detection requires knowing
-which predicates are single-valued vs. multi-valued; reconciliation
-requires a policy (most recent wins? highest confidence wins? both kept
-with a recorded conflict?). Entirely undesigned.
-
-### Storage abstraction
-
-`ChickenStock` is a single concrete in-memory implementation today, not
-an abstraction. A real backend interface (what methods every adapter
-must implement, how queries are expressed in a backend-agnostic way)
-needs to be designed before adapters like PostgreSQL, Neo4j, or RDF
-stores are attempted — implementing an adapter against an interface
-that doesn't exist yet would just have to be redone.
-
-### Knowledge graph output
-
-Exporting accepted knowledge as nodes/edges for a graph database is a
-likely early adapter, but the export shape depends on the entity and
-relationship representation decisions above.
-
-### Relational output
-
-Exporting accepted knowledge into relational tables (e.g. for a
-data warehouse) is a plausible alternate consumer; likely needs a
-different denormalization strategy than the graph export.
-
-### Integration with RAG / AI systems
-
-Structured knowledge as retrieval context, or as grounding for an
-agent's answers, is a target use case but not designed — depends on
-`chicken_stock` having a query interface, which doesn't exist yet.
-
-### Optional NLP / LLM extraction adapters
-
-`extract_nuggets` will eventually need something to actually do
-extraction — an NLP pipeline, an LLM call, or both, offered as optional
-adapters so core stays free of a hard dependency on any one provider or
-framework. Which adapter ships first, and what interface it implements,
-is undecided.
+### 15. Extractors — release 3
+`Extractor` protocol: `extract(text, *, source) -> list[ChickenTender]`
+— tenders rather than nuggets, so provenance is attached at the start.
+First a deterministic pattern-based extractor (no dependencies). The
+LLM extractor takes a caller-supplied `complete(prompt) -> str`
+function and parses JSON from it: no vendor SDK and no model IDs in
+source. spaCy is a later optional extra. Until then
+`extract_nuggets()` raises `NotImplementedError`.
 
 ## Fleet boundaries (do not duplicate)
 
@@ -156,12 +177,11 @@ is undecided.
 - Agent orchestration or agent memory → **BentoTruck**
 - General-purpose anomaly / data-quality detection → **FishTruck**
 
-ChickenTruck packages never import another fleet member; composition
-happens at the application layer only.
+ChickenTruck never imports another fleet member; composition happens
+at the application layer only.
 
 ## Working principle
 
-Each design-stage item above should get its own scoped decision (with
-the user) before implementation starts, the same way ThaiTruck's
-remaining roadmap items were handled — no speculative implementation
-against an undecided design.
+Unimplemented features raise `NotImplementedError` rather than faking
+output. New scope beyond the decisions above gets its own design
+decision before implementation.

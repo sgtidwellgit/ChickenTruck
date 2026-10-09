@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "chickentruck"
-version = "0.1.0"
+version = "2026.10.9"
 description = "Knowledge Engineering for Python — turning information into structured, traceable, queryable knowledge."
 readme = "README.md"
 requires-python = ">=3.9"
