@@ -3,10 +3,10 @@
 Knowledge Engineering for Python — turning information into structured,
 traceable knowledge, one nugget at a time.
 
-**Status: pre-alpha, architectural stub.** The public API below exists so
-the intended shape of the project is visible and importable, but the real
-extraction, validation, and storage logic is not implemented yet. Nothing
-in this package should be relied on for production use.
+**Status: pre-alpha.** Release 1 is built: the knowledge data model,
+schema, entity resolution, validation, and an in-memory, conflict-aware
+store. Exports, the SQLite backend, and extractors come in later
+releases (see `PROJECT.md`). The API may still change.
 
 ## Purpose
 
@@ -68,59 +68,107 @@ graph database, relational database, vector database, NLP framework, or
 agent framework. Anything backend-specific will eventually live behind an
 optional adapter, not in core.
 
-## Preliminary menu
+## The menu
 
-Names describe what each piece actually does, not just a theme — see
-`PROJECT.md` for the full design notes.
+Names describe what each piece actually does, not just a theme.
 
-| Module | Concept |
+| Module | What it does |
 |---|---|
-| `chicken_nuggets` | Atomic knowledge extraction / representation — breaking information into small, individual facts |
-| `chicken_tenders` | Candidate assertions "tendered" for consideration, not yet accepted as knowledge |
-| `grilled_chicken` | Validation — putting a candidate assertion "on the grill" before it's accepted |
-| `chicken_stock` | The foundational, backend-independent store for accepted knowledge |
+| `chicken_nuggets` | `Nugget`: a bare subject/predicate/object fact |
+| `chicken_tenders` | `ChickenTender`: a candidate claim with `Evidence` from `Source`s, validity, and qualifiers |
+| `chicken_coop` | `Entity`, `Ref`, `Mention`, and `ChickenCoop`: entity registry and resolution |
+| `chicken_recipe` | `Schema`: entity types, subtypes, and predicate definitions |
+| `grilled_chicken` | `grill()`: validation into accepted / rejected / needs-review, producing a `Fact` |
+| `chicken_stock` | `ChickenStock`: the indexed store for accepted knowledge, with conflict detection |
 
-Only these four are scaffolded today, and only lightly — see
-`PROJECT.md` for what's designed versus what's still open.
-
-## Conceptual pipeline
+## Pipeline
 
 ```
 Raw Information
-      |
-      v
-chicken_nuggets      (atomic knowledge)
-      |
-      v
-chicken_tenders      (candidate assertions)
-      |
-      v
-grilled_chicken      (validation)
-      |
-      v
-chicken_stock        (accepted, structured knowledge)
+  -> Nugget / ChickenTender   candidate claim + evidence
+  -> ChickenCoop              mentions resolved to entities
+  -> grill                    accepted / rejected / needs review
+  -> ChickenStock             accepted Facts, queryable
 ```
 
-This is a conceptual direction, not a finalized API contract.
+## Quick start
+
+```python
+from chickentruck import (
+    ChickenCoop, ChickenStock, ChickenTender, Entity, EntityType,
+    Evidence, Predicate, Schema, Source, grill,
+)
+
+schema = Schema()
+schema.add_type(EntityType("Person"))
+schema.add_type(EntityType("Place"))
+schema.add_predicate(Predicate("BORN_IN", domain="Person", range="Place",
+                               cardinality="one", temporal="moment"))
+
+coop = ChickenCoop(schema=schema)
+coop.add(Entity("person:franklin", "Benjamin Franklin", "Person", aliases={"Ben Franklin"}))
+
+encyclopedia = Source("encyclopedia", uri="https://example.org/franklin", authority=0.9)
+tender = ChickenTender(
+    "Ben Franklin", "BORN_IN", "Boston",
+    evidence=[Evidence(encyclopedia, quote="born in Boston", confidence=0.95)],
+    valid_from="1706-01-17",
+)
+
+tender = coop.resolve_tender(tender)   # "Ben Franklin" -> Ref("person:franklin"), "Boston" -> new provisional Place
+result = grill(tender, schema=schema, coop=coop)
+print(result.status)                   # accepted
+
+stock = ChickenStock(schema=schema)
+stock.add(result)
+for fact in stock.find(subject="person:franklin", predicate="BORN_IN"):
+    print(fact.object, round(fact.confidence, 3), fact.valid_from)
+    # place:boston 0.855 1706-01-17
+
+# A contradicting claim is kept, and the conflict recorded for review
+blog = Source("blog", authority=0.6)
+rival = coop.resolve_tender(ChickenTender(
+    "Benjamin Franklin", "BORN_IN", "Philadelphia",
+    evidence=[Evidence(blog, confidence=0.9)], valid_from="1706-01-17",
+))
+stock.add(grill(rival, schema=schema, coop=coop))
+print(stock.conflicts(open_only=True))  # one open Conflict between the two facts
+```
+
+Key behaviors:
+
+- **Nothing is guessed.** Ambiguous mentions stay unresolved and go to
+  review; unmatched mentions become *provisional* entities.
+- **Provenance is required.** A tender without evidence is rejected
+  unless you opt out.
+- **Confidence combines.** Evidence is weighted by source authority and
+  combined with noisy-OR; the same claim from two sources merges into
+  one `Fact`.
+- **Time has precision.** `"1706"` stays a year. Validity is
+  `[valid_from, valid_to)`; `find(valid_at=...)` asks what was true
+  then, `find(as_of=...)` asks what the stock believed then.
+- **Conflicts are never resolved silently.** The default `keep_both`
+  policy records them; `highest_confidence`, `highest_authority`, and
+  `most_recent_evidence` are opt-in. Losers are superseded, not deleted.
 
 ## Installation
-
-Not yet published. Once available:
 
 ```bash
 pip install chickentruck
 ```
 
+The published `0.1.0` is the original name-reservation stub; the
+release described here (`2026.10.9`) is not on PyPI yet. ChickenTruck has
+no runtime dependencies.
+
 ## Development status
 
-Pre-alpha. The name and package structure are reserved; the knowledge
-engineering architecture is being designed deliberately before it's
-built, rather than bolted together module by module. Current behavior:
-
-- `chickentruck.nuggets.Nugget` — a plain subject/predicate/object dataclass, usable today
-- `chickentruck.tenders.ChickenTender` — a plain candidate-assertion dataclass, usable today
-- `chickentruck.stock.ChickenStock` — a minimal in-memory store, usable today
-- `chickentruck.nuggets.extract_nuggets()` and `chickentruck.grilled.grill()` — raise `NotImplementedError`; the extraction and validation engines haven't been designed yet
+- **Release 1 (built):** data model, schema, resolution, `grill`,
+  in-memory `ChickenStock` with `find` and conflict detection.
+- **Release 2 (planned):** SQLite backend, graph and relational exports,
+  RAG helpers (`render_facts`, `check_claim`).
+- **Release 3 (planned):** extractors. Until then `extract_nuggets()`
+  raises `NotImplementedError`.
 
 ## Design principles
 

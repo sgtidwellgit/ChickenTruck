@@ -1,11 +1,12 @@
-"""Import-level tests for the ChickenTruck package stub."""
+"""Import-level tests for the ChickenTruck package."""
+
+import re
 
 import chickentruck
 
 
-def test_version_is_exposed():
-    assert isinstance(chickentruck.__version__, str)
-    assert chickentruck.__version__
+def test_version_is_date_based():
+    assert re.fullmatch(r"\d{4}\.\d{1,2}\.\d{1,2}(\.\d+)?", chickentruck.__version__)
 
 
 def test_public_api_is_importable():
