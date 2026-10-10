@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "chickentruck"
 version = "2026.10.9"
-description = "Knowledge Engineering for Python — turning information into structured, traceable, queryable knowledge."
+description = "Knowledge Engineering for Python: extract, resolve, validate, store, and serve traceable knowledge."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Babble Baz", email = "dev@babblebaz.com" }]
-keywords = ["knowledge-engineering", "knowledge-graph", "entity-extraction", "provenance", "structured-data", "ontology"]
+keywords = ["knowledge-engineering", "knowledge-graph", "entity-extraction", "information-extraction", "entity-resolution", "provenance", "rag", "llm", "ontology", "structured-data"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -31,6 +31,8 @@ dev = ["pytest>=7", "pytest-cov", "build", "twine"]
 
 [project.urls]
 Homepage = "https://github.com/sgtidwellgit/ChickenTruck"
+Documentation = "https://github.com/sgtidwellgit/ChickenTruck#readme"
+Issues = "https://github.com/sgtidwellgit/ChickenTruck/issues"
 
 [tool.hatch.build.targets.sdist]
 include = [

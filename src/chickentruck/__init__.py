@@ -3,7 +3,7 @@
 Turning information into structured, validated, traceable knowledge, one
 nugget at a time:
 
-    Nugget -> ChickenTender -> ChickenCoop.resolve_tender -> grill -> ChickenStock
+    text -> extractor -> ChickenTender -> ChickenCoop.resolve_tender -> grill -> ChickenStock
 
 See README.md for a walkthrough and PROJECT.md for design decisions.
 """
@@ -11,6 +11,18 @@ See README.md for a walkthrough and PROJECT.md for design decisions.
 from chickentruck._sqlite import SqliteStock
 from chickentruck._temporal import TimePoint, parse_time
 from chickentruck.coop import ChickenCoop, Entity, Mention, Ref, Resolution, Resolver
+from chickentruck.fryer import (
+    Extraction,
+    ExtractionError,
+    Extractor,
+    LLMExtractor,
+    Pattern,
+    PatternExtractor,
+    Skipped,
+    build_prompt,
+    parse_claims,
+    process_text,
+)
 from chickentruck.grilled import (
     ACCEPTED,
     NEEDS_REVIEW,
@@ -48,6 +60,16 @@ __version__ = "2026.10.9"
 __all__ = [
     "Nugget",
     "extract_nuggets",
+    "Extractor",
+    "Pattern",
+    "PatternExtractor",
+    "LLMExtractor",
+    "Extraction",
+    "ExtractionError",
+    "Skipped",
+    "build_prompt",
+    "parse_claims",
+    "process_text",
     "ChickenTender",
     "Source",
     "Evidence",
